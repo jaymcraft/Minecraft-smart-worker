@@ -1,10 +1,13 @@
 package dev.smartworker;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import net.minecraft.core.NonNullList;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.item.ItemStack;
 
 public final class WorkerState {
@@ -14,6 +17,8 @@ public final class WorkerState {
 	private final UUID ownerId;
 	private final NonNullList<ItemStack> inventory = NonNullList.withSize(INVENTORY_SIZE, ItemStack.EMPTY);
 	private final Map<String, Long> collected = new HashMap<>();
+	private final Set<String> whitelist = new HashSet<>();
+	private final Set<String> blacklist = new HashSet<>();
 	private boolean active;
 
 	public WorkerState(UUID entityId, UUID ownerId) {
@@ -25,6 +30,8 @@ public final class WorkerState {
 	public UUID ownerId() { return ownerId; }
 	public NonNullList<ItemStack> inventory() { return inventory; }
 	public Map<String, Long> collected() { return collected; }
+	public Set<String> whitelist() { return whitelist; }
+	public Set<String> blacklist() { return blacklist; }
 	public boolean active() { return active; }
 	public void setActive(boolean active) { this.active = active; }
 	public boolean isInventoryEmpty() {
@@ -70,6 +77,8 @@ public final class WorkerState {
 
 	public boolean canAccept(ItemStack stack) {
 		if (stack.isEmpty()) return false;
+		String itemId = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+		if (!ItemFilter.allows(itemId, whitelist, blacklist)) return false;
 		for (ItemStack slot : inventory) {
 			if (slot.isEmpty()) return true;
 			if (ItemStack.isSameItemSameComponents(slot, stack) && slot.getCount() < slot.getMaxStackSize()) return true;

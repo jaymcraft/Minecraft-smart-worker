@@ -10,6 +10,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.UUID;
 
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -37,6 +39,7 @@ public final class WorkerManager {
 	private final Map<UUID, WorkerState> workers = new LinkedHashMap<>();
 	private final Map<UUID, BlockPos> chestTargets = new LinkedHashMap<>();
 	private final Map<UUID, Integer> lastChestSearch = new LinkedHashMap<>();
+	private final Set<UUID> navigatingWorkers = new HashSet<>();
 	private int tickCounter;
 	private boolean dirty;
 
@@ -68,6 +71,7 @@ public final class WorkerManager {
 		golem.snapTo(owner.getX() + 1.5, owner.getY(), owner.getZ(), owner.getYRot(), 0.0F);
 		golem.setPlayerCreated(true);
 		golem.setPersistenceRequired();
+		golem.setNoAi(true);
 		golem.addTag(ENTITY_TAG);
 		golem.setCustomName(Component.literal("Smart Worker"));
 		golem.setCustomNameVisible(true);
@@ -98,10 +102,21 @@ public final class WorkerManager {
 		dirty = true;
 	}
 
+	public void filtersChanged() {
+		dirty = true;
+	}
+
 	public void tick(MinecraftServer server) {
 		tickCounter++;
 		if (tickCounter % SCAN_INTERVAL_TICKS == 0) {
+			navigatingWorkers.clear();
 			for (WorkerState state : new ArrayList<>(workers.values())) tickWorker(server, state);
+		}
+		for (WorkerState state : workers.values()) {
+			if (!state.active() || !navigatingWorkers.contains(state.entityId())) {
+				IronGolem worker = findLoadedWorker(server, state.entityId());
+				if (worker != null) freeze(worker);
+			}
 		}
 		if (tickCounter % 1200 == 0 && dirty) save(server);
 	}
@@ -125,7 +140,7 @@ public final class WorkerManager {
 		})).orElse(null);
 
 		if (target == null) {
-			worker.getNavigation().stop();
+			freeze(worker);
 			return;
 		}
 
@@ -140,8 +155,9 @@ public final class WorkerManager {
 				if (dropped.isEmpty()) target.discard();
 				else target.setItem(dropped);
 			}
+			freeze(worker);
 		} else {
-			worker.getNavigation().moveTo(target, 1.0);
+			moveTo(worker, state, target.getX(), target.getY(), target.getZ());
 		}
 	}
 
@@ -174,15 +190,29 @@ public final class WorkerManager {
 			if (moved > 0) dirty = true;
 			if (state.isInventoryEmpty()) {
 				chestTargets.remove(state.entityId());
-				worker.getNavigation().stop();
+				freeze(worker);
 			} else if (!chest.hasSpace()) {
 				chestTargets.remove(state.entityId());
 				lastChestSearch.remove(state.entityId());
 			}
 		} else {
-			worker.getNavigation().moveTo(targetX, targetY, targetZ, 1.0);
+			moveTo(worker, state, targetX, targetY, targetZ);
 		}
 		return true;
+	}
+
+	private void moveTo(IronGolem worker, WorkerState state, double x, double y, double z) {
+		worker.setNoAi(false);
+		worker.setTarget(null);
+		worker.getNavigation().moveTo(x, y, z, 1.0);
+		navigatingWorkers.add(state.entityId());
+	}
+
+	private void freeze(IronGolem worker) {
+		worker.getNavigation().stop();
+		worker.setTarget(null);
+		worker.setNoAi(true);
+		worker.setDeltaMovement(0.0, worker.getDeltaMovement().y, 0.0);
 	}
 
 	private BlockPos findNearestChest(IronGolem worker) {

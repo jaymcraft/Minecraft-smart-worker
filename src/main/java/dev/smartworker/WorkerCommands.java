@@ -1,14 +1,21 @@
 package dev.smartworker;
 
 import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 
 import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
+import net.minecraft.commands.SharedSuggestionProvider;
+import net.minecraft.commands.arguments.IdentifierArgument;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.ItemStack;
 
@@ -22,7 +29,28 @@ final class WorkerCommands {
 				.then(Commands.literal("start").executes(context -> setRunning(context.getSource(), manager, true)))
 				.then(Commands.literal("stop").executes(context -> setRunning(context.getSource(), manager, false)))
 				.then(Commands.literal("status").executes(context -> status(context.getSource(), manager)))
-				.then(Commands.literal("stats").executes(context -> stats(context.getSource(), manager))));
+				.then(Commands.literal("stats").executes(context -> stats(context.getSource(), manager)))
+				.then(Commands.literal("filters").executes(context -> filters(context.getSource(), manager)))
+				.then(filterCommand("whitelist", true, manager))
+				.then(filterCommand("blacklist", false, manager)));
+	}
+
+	private static LiteralArgumentBuilder<CommandSourceStack> filterCommand(
+			String name, boolean whitelist, WorkerManager manager) {
+		return Commands.literal(name)
+				.then(Commands.literal("add")
+						.then(Commands.argument("item", IdentifierArgument.id())
+								.suggests((context, builder) -> SharedSuggestionProvider.suggestResource(
+										BuiltInRegistries.ITEM.keySet(), builder))
+								.executes(context -> updateFilter(context.getSource(), manager, whitelist, true,
+										IdentifierArgument.getId(context, "item")))))
+				.then(Commands.literal("remove")
+						.then(Commands.argument("item", IdentifierArgument.id())
+								.suggests((context, builder) -> SharedSuggestionProvider.suggest(
+										filterValues(context.getSource(), manager, whitelist), builder))
+								.executes(context -> updateFilter(context.getSource(), manager, whitelist, false,
+										IdentifierArgument.getId(context, "item")))))
+				.then(Commands.literal("clear").executes(context -> clearFilter(context.getSource(), manager, whitelist)));
 	}
 
 	private static int spawn(CommandSourceStack source, WorkerManager manager) {
@@ -88,6 +116,73 @@ final class WorkerCommands {
 				.orElse("none");
 		source.sendSuccess(() -> Component.literal("Learned preferences (most collected first): " + summary), false);
 		return 1;
+	}
+
+	private static int filters(CommandSourceStack source, WorkerManager manager) throws CommandSyntaxException {
+		WorkerState state = ownedWorker(source, manager);
+		if (state == null) return 0;
+		source.sendSuccess(() -> Component.literal("Whitelist: " + describe(state.whitelist())
+				+ "; blacklist: " + describe(state.blacklist()) + ". Blacklist takes priority."), false);
+		return 1;
+	}
+
+	private static int updateFilter(CommandSourceStack source, WorkerManager manager, boolean whitelist,
+			boolean add, Identifier itemId) throws CommandSyntaxException {
+		WorkerState state = ownedWorker(source, manager);
+		if (state == null) return 0;
+		if (!BuiltInRegistries.ITEM.containsKey(itemId)) {
+			source.sendFailure(Component.literal("Unknown item ID: " + itemId));
+			return 0;
+		}
+
+		String normalized = itemId.toString();
+		Set<String> selected = whitelist ? state.whitelist() : state.blacklist();
+		boolean changed = add ? selected.add(normalized) : selected.remove(normalized);
+		if (add) {
+			// Keep configuration unambiguous when moving an item from one list to the other.
+			changed |= (whitelist ? state.blacklist() : state.whitelist()).remove(normalized);
+		}
+		if (changed) manager.filtersChanged();
+		boolean wasChanged = changed;
+		String operation = add ? "Added " : "Removed ";
+		String preposition = add ? " to " : " from ";
+		String listName = whitelist ? "whitelist" : "blacklist";
+		source.sendSuccess(() -> Component.literal(wasChanged
+				? operation + normalized + preposition + listName + "."
+				: normalized + " was already " + (add ? "in" : "absent from") + " the " + listName + "."), false);
+		return wasChanged ? 1 : 0;
+	}
+
+	private static int clearFilter(CommandSourceStack source, WorkerManager manager, boolean whitelist)
+			throws CommandSyntaxException {
+		WorkerState state = ownedWorker(source, manager);
+		if (state == null) return 0;
+		Set<String> selected = whitelist ? state.whitelist() : state.blacklist();
+		int removed = selected.size();
+		selected.clear();
+		manager.filtersChanged();
+		String listName = whitelist ? "whitelist" : "blacklist";
+		source.sendSuccess(() -> Component.literal("Cleared " + removed + " item(s) from the " + listName + "."), false);
+		return 1;
+	}
+
+	private static Iterable<String> filterValues(CommandSourceStack source, WorkerManager manager, boolean whitelist) {
+		try {
+			WorkerState state = manager.nearestOwned(source.getPlayerOrException()).orElse(null);
+			return state == null ? List.of() : whitelist ? state.whitelist() : state.blacklist();
+		} catch (CommandSyntaxException ignored) {
+			return List.of();
+		}
+	}
+
+	private static WorkerState ownedWorker(CommandSourceStack source, WorkerManager manager) throws CommandSyntaxException {
+		WorkerState state = manager.nearestOwned(source.getPlayerOrException()).orElse(null);
+		if (state == null) source.sendFailure(Component.literal("No owned Smart Worker is loaded within 32 blocks."));
+		return state;
+	}
+
+	private static String describe(Set<String> values) {
+		return values.isEmpty() ? "empty (no restriction)" : values.stream().sorted().reduce((a, b) -> a + ", " + b).orElse("");
 	}
 
 	private static String shortId(WorkerState state) {

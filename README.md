@@ -6,6 +6,7 @@ Smart Worker is a server-authoritative Fabric mod for Minecraft Java Edition 26.
 
 - `/worker spawn` creates a persistent worker owned by the command sender.
 - `/worker start` and `/worker stop` control the nearest owned worker within 32 blocks.
+- Workers remain stationary after spawning and while stopped. When running, movement is enabled only while pursuing a detected dropped item or returning a full inventory to a Worker Chest.
 - Right-clicking a worker toggles it for its owner; other players are denied.
 - Tagged Smart Workers use a graphite-and-steel robot skin with orange accents and cyan lights. Ordinary iron golems are unchanged.
 - A running worker scans every 10 ticks for dropped items within 16 blocks and uses Minecraft's navigation to walk to them.
@@ -14,7 +15,8 @@ Smart Worker is a server-authoritative Fabric mod for Minecraft Java Edition 26.
 - Each successful pickup updates a per-item collection count. Target priority is `4 * log(1 + collected count) - distance`, so frequently useful items gradually win against similarly distant alternatives while nearby items remain attractive.
 - `/worker status` reports running state and inventory use.
 - `/worker stats` reports the learned preferences.
-- Ownership, inventory (including item components), active state, and learning data are saved in `smart_workers.json` in the world directory using an atomic replacement.
+- Each worker has its own item whitelist and blacklist. An empty whitelist permits every item; a nonempty whitelist permits only listed items, and the blacklist always denies an item. Filters apply before the worker chooses a dropped-item target.
+- Ownership, inventory (including item components), active state, learning data, and item filters are saved in `smart_workers.json` in the world directory using an atomic replacement.
 
 ## Requirements
 
@@ -40,7 +42,7 @@ set JAVA_HOME=C:\path\to\jdk-25
 gradlew.bat build
 ```
 
-The production JAR is written to `build/libs/smart-worker-1.1.0.jar`.
+The production JAR is written to `build/libs/smart-worker-1.2.0.jar`.
 
 ## Usage
 
@@ -51,6 +53,17 @@ Stand near the worker you intend to control. Commands only select workers you ow
 3. Craft and place a Worker Chest using one chest surrounded by eight iron ingots, or obtain it with `/give @s smart_worker:worker_chest`.
 4. Run `/worker start`.
 5. Inspect it with `/worker status` and `/worker stats`.
+
+### Item filters
+
+Commands affect your nearest owned worker within 32 blocks and accept registry IDs such as `minecraft:oak_log`:
+
+- `/worker filters` displays both lists.
+- `/worker whitelist add <item>` and `/worker whitelist remove <item>` edit the allow list.
+- `/worker blacklist add <item>` and `/worker blacklist remove <item>` edit the deny list.
+- `/worker whitelist clear` and `/worker blacklist clear` empty a list.
+
+Adding an item to one list automatically removes it from the other. Item IDs are tab-completed and validated against Minecraft's item registry.
 
 ## Known limitations
 

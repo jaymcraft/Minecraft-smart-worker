@@ -55,6 +55,8 @@ final class WorkerPersistence {
 			JsonObject collected = new JsonObject();
 			state.collected().forEach(collected::addProperty);
 			object.add("collected", collected);
+			object.add("whitelist", stringArray(state.whitelist()));
+			object.add("blacklist", stringArray(state.blacklist()));
 			workerArray.add(object);
 		}
 		root.add("workers", workerArray);
@@ -96,9 +98,22 @@ final class WorkerPersistence {
 				for (Map.Entry<String, JsonElement> entry : collected.entrySet()) {
 					state.collected().put(entry.getKey(), Math.max(0L, entry.getValue().getAsLong()));
 				}
+				readStringArray(object, "whitelist", state.whitelist());
+				readStringArray(object, "blacklist", state.blacklist());
 				target.put(entityId, state);
 			}
 		}
+	}
+
+	private static JsonArray stringArray(Iterable<String> values) {
+		JsonArray array = new JsonArray();
+		for (String value : values) array.add(value);
+		return array;
+	}
+
+	private static void readStringArray(JsonObject object, String name, java.util.Set<String> target) {
+		if (!object.has(name)) return;
+		for (JsonElement element : object.getAsJsonArray(name)) target.add(element.getAsString());
 	}
 
 	private static Path file(MinecraftServer server) {
