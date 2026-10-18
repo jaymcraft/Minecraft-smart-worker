@@ -1,0 +1,12 @@
+{
+  "required": true,
+  "package": "dev.smartworker.client.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "client": [
+    "IronGolemRenderStateMixin",
+    "IronGolemRendererMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "smart_worker",
+  "version": "${version}",
+  "name": "Smart Worker",
+  "description": "Server-authoritative workers that collect dropped items and learn preferences.",
+  "authors": ["Smart Worker contributors"],
+  "license": "MIT",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["dev.smartworker.SmartWorkerMod"]
+  },
+  "mixins": [
+    {
+      "config": "smart_worker.client.mixins.json",
+      "environment": "client"
+    }
+  ],
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "minecraft": "~26.3",
+    "java": ">=25",
+    "fabric-api": "*"
+  }
+}
