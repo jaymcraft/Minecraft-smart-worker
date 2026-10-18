@@ -1,0 +1,6 @@
+{
+  "model": {
+    "type": "minecraft:model",
+    "model": "smart_worker:block/worker_chest"
+  }
+}

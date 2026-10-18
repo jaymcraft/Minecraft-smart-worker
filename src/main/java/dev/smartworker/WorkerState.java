@@ -27,6 +27,14 @@ public final class WorkerState {
 	public Map<String, Long> collected() { return collected; }
 	public boolean active() { return active; }
 	public void setActive(boolean active) { this.active = active; }
+	public boolean isInventoryEmpty() {
+		for (ItemStack stack : inventory) if (!stack.isEmpty()) return false;
+		return true;
+	}
+	public boolean isInventoryFull() {
+		for (ItemStack stack : inventory) if (stack.isEmpty()) return false;
+		return true;
+	}
 
 	public void record(String itemId, int amount) {
 		if (amount > 0) collected.merge(itemId, (long) amount, Long::sum);

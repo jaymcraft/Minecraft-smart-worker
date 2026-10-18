@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "key": {
+    "C": "minecraft:chest",
+    "I": "minecraft:iron_ingot"
+  },
+  "pattern": [
+    "III",
+    "ICI",
+    "III"
+  ],
+  "result": {
+    "count": 1,
+    "id": "smart_worker:worker_chest"
+  }
+}

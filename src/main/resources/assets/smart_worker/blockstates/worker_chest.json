@@ -1,0 +1,5 @@
+{
+  "variants": {
+    "": { "model": "smart_worker:block/worker_chest" }
+  }
+}

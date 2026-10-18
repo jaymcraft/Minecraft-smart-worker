@@ -1,5 +1,6 @@
 package dev.smartworker;
 
+import dev.smartworker.content.ModContent;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
@@ -18,6 +19,7 @@ public final class SmartWorkerMod implements ModInitializer {
 
 	@Override
 	public void onInitialize() {
+		ModContent.initialize();
 		CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) ->
 				WorkerCommands.register(dispatcher, WORKERS));
 		ServerLifecycleEvents.SERVER_STARTED.register(WORKERS::load);

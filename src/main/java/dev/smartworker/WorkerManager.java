@@ -1,5 +1,6 @@
 package dev.smartworker;
 
+import dev.smartworker.content.WorkerChestBlockEntity;
 import dev.smartworker.learning.PreferenceModel;
 
 import java.io.IOException;
@@ -12,6 +13,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -28,8 +30,13 @@ public final class WorkerManager {
 	private static final int SCAN_INTERVAL_TICKS = 10;
 	private static final double SEARCH_RADIUS = 16.0;
 	private static final double CONTROL_RADIUS_SQUARED = 32.0 * 32.0;
+	private static final int CHEST_SEARCH_INTERVAL_TICKS = 100;
+	private static final int CHEST_HORIZONTAL_RADIUS = 16;
+	private static final int CHEST_VERTICAL_RADIUS = 6;
 
 	private final Map<UUID, WorkerState> workers = new LinkedHashMap<>();
+	private final Map<UUID, BlockPos> chestTargets = new LinkedHashMap<>();
+	private final Map<UUID, Integer> lastChestSearch = new LinkedHashMap<>();
 	private int tickCounter;
 	private boolean dirty;
 
@@ -105,6 +112,8 @@ public final class WorkerManager {
 		if (worker == null || !worker.isAlive()) return;
 
 		worker.setTarget(null);
+		if (state.isInventoryFull() && tryUnload(worker, state)) return;
+
 		List<ItemEntity> candidates = worker.level().getEntitiesOfClass(
 				ItemEntity.class,
 				worker.getBoundingBox().inflate(SEARCH_RADIUS),
@@ -134,6 +143,69 @@ public final class WorkerManager {
 		} else {
 			worker.getNavigation().moveTo(target, 1.0);
 		}
+	}
+
+	private boolean tryUnload(IronGolem worker, WorkerState state) {
+		BlockPos targetPos = chestTargets.get(state.entityId());
+		WorkerChestBlockEntity chest = targetPos == null ? null : loadedChest(worker.level(), targetPos);
+		if (chest == null || !chest.hasSpace()) {
+			chestTargets.remove(state.entityId());
+			targetPos = null;
+			int lastSearch = lastChestSearch.getOrDefault(state.entityId(), Integer.MIN_VALUE / 2);
+			if (tickCounter - lastSearch >= CHEST_SEARCH_INTERVAL_TICKS) {
+				lastChestSearch.put(state.entityId(), tickCounter);
+				targetPos = findNearestChest(worker);
+				if (targetPos != null) chestTargets.put(state.entityId(), targetPos);
+			}
+		}
+
+		if (targetPos == null) return false;
+		chest = loadedChest(worker.level(), targetPos);
+		if (chest == null) {
+			chestTargets.remove(state.entityId());
+			return false;
+		}
+
+		double targetX = targetPos.getX() + 0.5;
+		double targetY = targetPos.getY() + 0.5;
+		double targetZ = targetPos.getZ() + 0.5;
+		if (worker.distanceToSqr(targetX, targetY, targetZ) <= 6.25) {
+			int moved = chest.insertAll(state.inventory());
+			if (moved > 0) dirty = true;
+			if (state.isInventoryEmpty()) {
+				chestTargets.remove(state.entityId());
+				worker.getNavigation().stop();
+			} else if (!chest.hasSpace()) {
+				chestTargets.remove(state.entityId());
+				lastChestSearch.remove(state.entityId());
+			}
+		} else {
+			worker.getNavigation().moveTo(targetX, targetY, targetZ, 1.0);
+		}
+		return true;
+	}
+
+	private BlockPos findNearestChest(IronGolem worker) {
+		BlockPos center = worker.blockPosition();
+		BlockPos nearest = null;
+		double nearestDistance = Double.MAX_VALUE;
+		for (BlockPos candidate : BlockPos.betweenClosed(
+				center.offset(-CHEST_HORIZONTAL_RADIUS, -CHEST_VERTICAL_RADIUS, -CHEST_HORIZONTAL_RADIUS),
+				center.offset(CHEST_HORIZONTAL_RADIUS, CHEST_VERTICAL_RADIUS, CHEST_HORIZONTAL_RADIUS))) {
+			WorkerChestBlockEntity chest = loadedChest(worker.level(), candidate);
+			if (chest == null || !chest.hasSpace()) continue;
+			double distance = candidate.distSqr(center);
+			if (distance < nearestDistance) {
+				nearestDistance = distance;
+				nearest = candidate.immutable();
+			}
+		}
+		return nearest;
+	}
+
+	private WorkerChestBlockEntity loadedChest(net.minecraft.world.level.Level level, BlockPos pos) {
+		if (!level.hasChunkAt(pos)) return null;
+		return level.getBlockEntity(pos) instanceof WorkerChestBlockEntity chest ? chest : null;
 	}
 
 	private IronGolem findLoadedWorker(MinecraftServer server, UUID id) {

@@ -10,6 +10,7 @@ Smart Worker is a server-authoritative Fabric mod for Minecraft Java Edition 26.
 - Tagged Smart Workers use a graphite-and-steel robot skin with orange accents and cyan lights. Ordinary iron golems are unchanged.
 - A running worker scans every 10 ticks for dropped items within 16 blocks and uses Minecraft's navigation to walk to them.
 - Nine inventory slots enforce normal item stack limits. A partial pickup leaves the uncollected remainder in the world.
+- The craftable 27-slot Worker Chest has a custom industrial texture and a normal container screen. Once all nine worker inventory slots are occupied, workers automatically return to the nearest available Worker Chest within 16 horizontal and 6 vertical blocks and transfer everything they carry.
 - Each successful pickup updates a per-item collection count. Target priority is `4 * log(1 + collected count) - distance`, so frequently useful items gradually win against similarly distant alternatives while nearby items remain attractive.
 - `/worker status` reports running state and inventory use.
 - `/worker stats` reports the learned preferences.
@@ -22,7 +23,7 @@ Smart Worker is a server-authoritative Fabric mod for Minecraft Java Edition 26.
 - Fabric API 0.163.0+26.3
 - Java 25
 
-Install the built JAR and Fabric API in the dedicated server's `mods` directory. Install them on clients as well to see the dedicated robot skin. Because the worker still uses a vanilla entity type and no custom network protocol, unmodded clients can still connect when the rest of the server's mod set permits it, but they will see an iron golem.
+Install the built JAR and Fabric API in the dedicated server's `mods` directory and on every connecting client. Version 1.1 adds the custom `smart_worker:worker_chest` block, so clients now need the mod to synchronize the block registry and render its model and texture.
 
 ## Build
 
@@ -39,7 +40,7 @@ set JAVA_HOME=C:\path\to\jdk-25
 gradlew.bat build
 ```
 
-The production JAR is written to `build/libs/smart-worker-1.0.0.jar`.
+The production JAR is written to `build/libs/smart-worker-1.1.0.jar`.
 
 ## Usage
 
@@ -47,12 +48,13 @@ Stand near the worker you intend to control. Commands only select workers you ow
 
 1. Run `/worker spawn`.
 2. Drop items within 16 blocks.
-3. Run `/worker start`.
-4. Inspect it with `/worker status` and `/worker stats`.
+3. Craft and place a Worker Chest using one chest surrounded by eight iron ingots, or obtain it with `/give @s smart_worker:worker_chest`.
+4. Run `/worker start`.
+5. Inspect it with `/worker status` and `/worker stats`.
 
 ## Known limitations
 
-- The first release only collects dropped item entities; it does not break blocks or unload its inventory.
-- There is no inventory GUI. Inventory contents are currently visible as a count through `/worker status` and persist for future expansion.
+- The first release only collects dropped item entities; it does not break blocks.
+- The robot's carried inventory has no direct GUI. It can be checked through `/worker status` and is automatically unloaded into Worker Chests.
 - Unreachable items remain untouched. The worker relies on vanilla navigation and retries target selection at the next scan.
 - Commands control the nearest owned loaded worker; there is no worker-name selector yet.
