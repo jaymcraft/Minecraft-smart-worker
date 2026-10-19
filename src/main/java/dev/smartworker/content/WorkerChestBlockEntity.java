@@ -98,4 +98,15 @@ public final class WorkerChestBlockEntity extends BaseContainerBlockEntity {
 		}
 		return false;
 	}
+
+	public boolean canAcceptAny(NonNullList<ItemStack> source) {
+		for (ItemStack offered : source) {
+			if (offered.isEmpty()) continue;
+			for (ItemStack slot : items) {
+				if (slot.isEmpty() || ItemStack.isSameItemSameComponents(slot, offered)
+						&& slot.getCount() < slot.getMaxStackSize()) return true;
+			}
+		}
+		return false;
+	}
 }

@@ -56,11 +56,13 @@ public final class WorkerManager {
 	private final Map<UUID, Integer> miningProgress = new LinkedHashMap<>();
 	private final Map<UUID, MiningScanState> miningScans = new LinkedHashMap<>();
 	private final Map<UUID, Float> lastHealth = new LinkedHashMap<>();
+	private final WorkerNavigationTracker navigationTracker = new WorkerNavigationTracker();
 	private int tickCounter;
 	private boolean dirty;
 
 	public void load(MinecraftServer server) {
 		workers.clear();
+		navigationTracker.clearAll();
 		try {
 			WorkerPersistence.load(server, workers);
 			SmartWorkerMod.LOGGER.info("Loaded {} smart worker(s)", workers.size());
@@ -115,6 +117,7 @@ public final class WorkerManager {
 
 	public void setActive(WorkerState state, boolean active) {
 		state.setActive(active);
+		navigationTracker.clearProgress(state.entityId());
 		dirty = true;
 	}
 
@@ -134,6 +137,8 @@ public final class WorkerManager {
 		miningTargets.remove(state.entityId());
 		miningProgress.remove(state.entityId());
 		miningScans.remove(state.entityId());
+		chestTargets.remove(state.entityId());
+		navigationTracker.clearProgress(state.entityId());
 		dirty = true;
 	}
 
@@ -189,6 +194,7 @@ public final class WorkerManager {
 
 	public void tick(MinecraftServer server) {
 		tickCounter++;
+		if (tickCounter % 1200 == 0) navigationTracker.pruneExpired(tickCounter);
 		if (tickCounter % SCAN_INTERVAL_TICKS == 0) {
 			navigatingWorkers.clear();
 			for (WorkerState state : new ArrayList<>(workers.values())) tickWorker(server, state);
@@ -205,7 +211,10 @@ public final class WorkerManager {
 	private void tickWorker(MinecraftServer server, WorkerState state) {
 		if (!state.active()) return;
 		IronGolem worker = findLoadedWorker(server, state.entityId());
-		if (worker == null || !worker.isAlive()) return;
+		if (worker == null || !worker.isAlive()) {
+			navigationTracker.clearProgress(state.entityId());
+			return;
+		}
 		String dimension = worker.level().dimension().identifier().toString();
 		float previousHealth = lastHealth.getOrDefault(state.entityId(), worker.getHealth());
 		if (worker.getHealth() < previousHealth) {
@@ -223,7 +232,9 @@ public final class WorkerManager {
 		List<ItemEntity> candidates = worker.level().getEntitiesOfClass(
 				ItemEntity.class,
 				worker.getBoundingBox().inflate(SEARCH_RADIUS),
-				item -> item.isAlive() && !item.getItem().isEmpty() && state.canAccept(item.getItem()));
+				item -> item.isAlive() && !item.getItem().isEmpty() && state.canAccept(item.getItem())
+						&& !navigationTracker.isAvoided(state.entityId(),
+								WorkerNavigationTracker.Destination.item(dimension, item.getUUID()), tickCounter));
 
 		ItemEntity target = candidates.stream().max(Comparator.comparingDouble(item -> {
 			String id = BuiltInRegistries.ITEM.getKey(item.getItem().getItem()).toString();
@@ -249,7 +260,8 @@ public final class WorkerManager {
 			}
 			freeze(worker);
 		} else {
-			moveTo(worker, state, target.getX(), target.getY(), target.getZ());
+			navigateTo(worker, state, WorkerNavigationTracker.Destination.item(dimension, target.getUUID()),
+					target.getX(), target.getY(), target.getZ());
 		}
 	}
 
@@ -270,8 +282,11 @@ public final class WorkerManager {
 			return navigateToRememberedArea(worker, state, dimension);
 		}
 		if (worker.distanceToSqr(target.getX() + 0.5, target.getY() + 0.5, target.getZ() + 0.5) > MINING_REACH_SQUARED) {
-			moveTo(worker, state, target.getX() + 0.5, target.getY(), target.getZ() + 0.5);
-			return true;
+			if (navigateTo(worker, state, WorkerNavigationTracker.Destination.block(dimension, target),
+					target.getX() + 0.5, target.getY(), target.getZ() + 0.5)) return true;
+			clearMiningTarget(level, worker, state);
+			miningScans.remove(state.entityId());
+			return false;
 		}
 
 		freeze(worker);
@@ -336,7 +351,9 @@ public final class WorkerManager {
 	}
 
 	private boolean validMiningTarget(ServerLevel level, WorkerState state, String dimension, BlockPos pos) {
-		if (pos == null || !level.hasChunkAt(pos) || state.isDangerous(dimension, pos)) return false;
+		if (pos == null || !level.hasChunkAt(pos) || state.isDangerous(dimension, pos)
+				|| navigationTracker.isAvoided(state.entityId(),
+						WorkerNavigationTracker.Destination.block(dimension, pos), tickCounter)) return false;
 		BlockState blockState = level.getBlockState(pos);
 		String blockId = BuiltInRegistries.BLOCK.getKey(blockState.getBlock()).toString();
 		return state.mineBlocks().contains(blockId) && !blockState.isAir()
@@ -389,13 +406,16 @@ public final class WorkerManager {
 				.filter(memory -> memory.dimension().equals(dimension))
 				.filter(memory -> memory.resource().equals(state.miningGoalItem()))
 				.filter(memory -> !state.isDangerous(dimension, memory.center()))
+				.filter(memory -> memory.center().distSqr(worker.blockPosition()) >= 6.0 * 6.0)
+				.filter(memory -> !navigationTracker.isAvoided(state.entityId(),
+						WorkerNavigationTracker.Destination.memory(dimension, memory.center()), tickCounter))
 				.filter(memory -> memory.center().distSqr(worker.blockPosition()) <= 64.0 * 64.0)
 				.max(Comparator.comparingDouble(memory -> memory.finds() * 100.0
 						- memory.center().distSqr(worker.blockPosition()))).orElse(null);
-		if (best == null || best.center().distSqr(worker.blockPosition()) < 6.0 * 6.0) return false;
+		if (best == null) return false;
 		BlockPos center = best.center();
-		moveTo(worker, state, center.getX() + 0.5, center.getY(), center.getZ() + 0.5);
-		return true;
+		return navigateTo(worker, state, WorkerNavigationTracker.Destination.memory(dimension, center),
+				center.getX() + 0.5, center.getY(), center.getZ() + 0.5);
 	}
 
 	private void clearMiningTarget(ServerLevel level, IronGolem worker, WorkerState state) {
@@ -437,43 +457,75 @@ public final class WorkerManager {
 	}
 
 	private boolean tryUnload(IronGolem worker, WorkerState state) {
-		BlockPos targetPos = state.assignedChest() != null ? state.assignedChest() : chestTargets.get(state.entityId());
+		String dimension = worker.level().dimension().identifier().toString();
+		UUID workerId = state.entityId();
+		BlockPos targetPos = chestTargets.get(workerId);
 		WorkerChestBlockEntity chest = targetPos == null ? null : loadedChest(worker.level(), targetPos);
-		if (chest == null || !chest.hasSpace()) {
-			if (state.assignedChest() != null) return false;
-			chestTargets.remove(state.entityId());
+		if (targetPos != null && (chest == null || !chest.canAcceptAny(state.inventory())
+				|| navigationTracker.isAvoided(workerId,
+						WorkerNavigationTracker.Destination.chest(dimension, targetPos), tickCounter))) {
+			chestTargets.remove(workerId);
 			targetPos = null;
-			int lastSearch = lastChestSearch.getOrDefault(state.entityId(), Integer.MIN_VALUE / 2);
-			if (tickCounter - lastSearch >= CHEST_SEARCH_INTERVAL_TICKS) {
-				lastChestSearch.put(state.entityId(), tickCounter);
-				targetPos = findNearestChest(worker);
-				if (targetPos != null) chestTargets.put(state.entityId(), targetPos);
+			chest = null;
+		}
+
+		if (targetPos == null && state.assignedChest() != null) {
+			BlockPos assigned = state.assignedChest();
+			WorkerChestBlockEntity assignedChest = loadedChest(worker.level(), assigned);
+			if (assignedChest != null && assignedChest.canAcceptAny(state.inventory())
+					&& !navigationTracker.isAvoided(workerId,
+							WorkerNavigationTracker.Destination.chest(dimension, assigned), tickCounter)) {
+				targetPos = assigned;
+				chest = assignedChest;
 			}
 		}
 
-		if (targetPos == null) return false;
-		chest = loadedChest(worker.level(), targetPos);
-		if (chest == null) {
-			chestTargets.remove(state.entityId());
-			return false;
+		if (targetPos == null) {
+			int lastSearch = lastChestSearch.getOrDefault(workerId, Integer.MIN_VALUE / 2);
+			if (tickCounter - lastSearch >= CHEST_SEARCH_INTERVAL_TICKS) {
+				lastChestSearch.put(workerId, tickCounter);
+				targetPos = findNearestChest(worker, state, dimension);
+				if (targetPos != null) {
+					chestTargets.put(workerId, targetPos);
+					chest = loadedChest(worker.level(), targetPos);
+				}
+			}
 		}
+		if (targetPos == null || chest == null) return false;
 
 		double targetX = targetPos.getX() + 0.5;
 		double targetY = targetPos.getY() + 0.5;
 		double targetZ = targetPos.getZ() + 0.5;
 		if (worker.distanceToSqr(targetX, targetY, targetZ) <= 6.25) {
+			navigationTracker.clearProgress(workerId);
 			int moved = chest.insertAll(state.inventory());
 			if (moved > 0) dirty = true;
 			if (state.isInventoryEmpty()) {
-				chestTargets.remove(state.entityId());
+				chestTargets.remove(workerId);
 				freeze(worker);
-			} else if (!chest.hasSpace()) {
-				chestTargets.remove(state.entityId());
-				lastChestSearch.remove(state.entityId());
+			} else if (!chest.canAcceptAny(state.inventory())) {
+				chestTargets.remove(workerId);
+				lastChestSearch.remove(workerId);
 			}
 		} else {
-			moveTo(worker, state, targetX, targetY, targetZ);
+			if (!navigateTo(worker, state, WorkerNavigationTracker.Destination.chest(dimension, targetPos),
+					targetX, targetY, targetZ)) {
+				chestTargets.remove(workerId);
+				lastChestSearch.remove(workerId);
+				return false;
+			}
 		}
+		return true;
+	}
+
+	private boolean navigateTo(IronGolem worker, WorkerState state, WorkerNavigationTracker.Destination destination,
+			double x, double y, double z) {
+		if (!navigationTracker.observe(state.entityId(), destination,
+				Math.sqrt(worker.distanceToSqr(x, y, z)), tickCounter)) {
+			freeze(worker);
+			return false;
+		}
+		moveTo(worker, state, x, y, z);
 		return true;
 	}
 
@@ -485,13 +537,14 @@ public final class WorkerManager {
 	}
 
 	private void freeze(IronGolem worker) {
+		navigationTracker.clearProgress(worker.getUUID());
 		worker.getNavigation().stop();
 		worker.setTarget(null);
 		worker.setNoAi(true);
 		worker.setDeltaMovement(0.0, worker.getDeltaMovement().y, 0.0);
 	}
 
-	private BlockPos findNearestChest(IronGolem worker) {
+	private BlockPos findNearestChest(IronGolem worker, WorkerState state, String dimension) {
 		BlockPos center = worker.blockPosition();
 		BlockPos nearest = null;
 		double nearestDistance = Double.MAX_VALUE;
@@ -499,7 +552,9 @@ public final class WorkerManager {
 				center.offset(-CHEST_HORIZONTAL_RADIUS, -CHEST_VERTICAL_RADIUS, -CHEST_HORIZONTAL_RADIUS),
 				center.offset(CHEST_HORIZONTAL_RADIUS, CHEST_VERTICAL_RADIUS, CHEST_HORIZONTAL_RADIUS))) {
 			WorkerChestBlockEntity chest = loadedChest(worker.level(), candidate);
-			if (chest == null || !chest.hasSpace()) continue;
+			if (chest == null || !chest.canAcceptAny(state.inventory())
+					|| navigationTracker.isAvoided(state.entityId(),
+							WorkerNavigationTracker.Destination.chest(dimension, candidate), tickCounter)) continue;
 			double distance = candidate.distSqr(center);
 			if (distance < nearestDistance) {
 				nearestDistance = distance;
