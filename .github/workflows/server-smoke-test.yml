@@ -1,0 +1,63 @@
+name: Dedicated server smoke test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+
+      - name: Build mod
+        run: ./gradlew build --no-daemon
+
+      - name: Prepare dedicated Fabric server
+        shell: bash
+        run: |
+          set -euo pipefail
+          minecraft_version=$(sed -n 's/^minecraft_version=//p' gradle.properties)
+          loader_version=$(sed -n 's/^loader_version=//p' gradle.properties)
+          fabric_api_version=$(sed -n 's/^fabric_api_version=//p' gradle.properties)
+          mod_version=$(sed -n 's/^mod_version=//p' gradle.properties)
+          server_dir=build/server-smoke-test
+
+          mkdir -p "$server_dir/mods"
+          cp "build/libs/smart-worker-${mod_version}.jar" "$server_dir/mods/"
+          curl --fail --location --silent --show-error --retry 3 \
+            "https://meta.fabricmc.net/v2/versions/loader/${minecraft_version}/${loader_version}/1.1.2/server/jar" \
+            --output "$server_dir/fabric-server-launch.jar"
+          curl --fail --location --silent --show-error --retry 3 \
+            "https://maven.fabricmc.net/net/fabricmc/fabric-api/fabric-api/${fabric_api_version}/fabric-api-${fabric_api_version}.jar" \
+            --output "$server_dir/mods/fabric-api.jar"
+          printf 'eula=true\n' > "$server_dir/eula.txt"
+
+      - name: Verify mod loads and server starts
+        run: python3 .github/scripts/check_server_startup.py build/server-smoke-test
+
+      - name: Upload server log on failure
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: dedicated-server-log
+          path: build/server-smoke-test/logs/latest.log
+          if-no-files-found: ignore
