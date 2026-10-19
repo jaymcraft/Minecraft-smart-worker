@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -18,6 +19,7 @@ import java.util.UUID;
 
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.MinecraftServer;
@@ -33,6 +35,7 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.pathfinder.Path;
 
 public final class WorkerManager {
 	public static final String ENTITY_TAG = "smart_worker";
@@ -46,13 +49,14 @@ public final class WorkerManager {
 	private static final int MINING_HORIZONTAL_RADIUS = 32;
 	private static final int MINING_VERTICAL_RADIUS = 24;
 	private static final int MINING_SCAN_BUDGET = 8_192;
-	private static final double MINING_REACH_SQUARED = 3.25 * 3.25;
+	private static final int MINING_PATH_BUDGET = 16;
+	private static final double MINING_REACH_SQUARED = 3.75 * 3.75;
 
 	private final Map<UUID, WorkerState> workers = new LinkedHashMap<>();
 	private final Map<UUID, BlockPos> chestTargets = new LinkedHashMap<>();
 	private final Map<UUID, Integer> lastChestSearch = new LinkedHashMap<>();
 	private final Set<UUID> navigatingWorkers = new HashSet<>();
-	private final Map<UUID, BlockPos> miningTargets = new LinkedHashMap<>();
+	private final Map<UUID, MiningTarget> miningTargets = new LinkedHashMap<>();
 	private final Map<UUID, Integer> miningProgress = new LinkedHashMap<>();
 	private final Map<UUID, MiningScanState> miningScans = new LinkedHashMap<>();
 	private final Map<UUID, Float> lastHealth = new LinkedHashMap<>();
@@ -255,9 +259,12 @@ public final class WorkerManager {
 
 	private boolean tickMining(MinecraftServer server, IronGolem worker, WorkerState state, String dimension) {
 		ServerLevel level = (ServerLevel) worker.level();
-		BlockPos target = miningTargets.get(state.entityId());
-		if (!validMiningTarget(level, state, dimension, target)) {
+		MiningTarget target = miningTargets.get(state.entityId());
+		if (target != null && !validMiningTarget(level, state, dimension, target.block())) {
 			clearMiningTarget(level, worker, state);
+			target = null;
+		}
+		if (target == null) {
 			if (tickCounter % MINING_SCAN_INTERVAL_TICKS == 0) {
 				target = continueMiningScan(level, worker, state, dimension);
 				if (target != null) miningTargets.put(state.entityId(), target);
@@ -269,29 +276,35 @@ public final class WorkerManager {
 			if (miningScans.containsKey(state.entityId())) return false;
 			return navigateToRememberedArea(worker, state, dimension);
 		}
-		if (worker.distanceToSqr(target.getX() + 0.5, target.getY() + 0.5, target.getZ() + 0.5) > MINING_REACH_SQUARED) {
-			moveTo(worker, state, target.getX() + 0.5, target.getY(), target.getZ() + 0.5);
+		BlockPos block = target.block();
+		if (worker.distanceToSqr(block.getX() + 0.5, block.getY() + 0.5, block.getZ() + 0.5) > MINING_REACH_SQUARED) {
+			BlockPos stand = target.stand();
+			if (!moveTo(worker, state, stand.getX() + 0.5, stand.getY(), stand.getZ() + 0.5)) {
+				clearMiningTarget(level, worker, state);
+				miningScans.remove(state.entityId());
+				return false;
+			}
 			return true;
 		}
 
 		freeze(worker);
-		BlockState blockState = level.getBlockState(target);
-		float hardness = blockState.getDestroySpeed(level, target);
+		BlockState blockState = level.getBlockState(block);
+		float hardness = blockState.getDestroySpeed(level, block);
 		if (hardness < 0.0F) {
 			clearMiningTarget(level, worker, state);
 			return false;
 		}
 		int requiredSteps = Math.max(2, Math.round(Math.max(0.5F, hardness) * 6.0F));
 		int progress = miningProgress.merge(state.entityId(), 1, Integer::sum);
-		level.destroyBlockProgress(worker.getId(), target, Math.min(9, progress * 10 / requiredSteps));
+		level.destroyBlockProgress(worker.getId(), block, Math.min(9, progress * 10 / requiredSteps));
 		if (progress < requiredSteps) return true;
 
-		mineBlock(server, level, worker, state, target, blockState, dimension);
+		mineBlock(server, level, worker, state, block, blockState, dimension);
 		clearMiningTarget(level, worker, state);
 		return true;
 	}
 
-	private BlockPos continueMiningScan(ServerLevel level, IronGolem worker, WorkerState state, String dimension) {
+	private MiningTarget continueMiningScan(ServerLevel level, IronGolem worker, WorkerState state, String dimension) {
 		BlockPos center = worker.blockPosition();
 		MiningScanState scan = miningScans.get(state.entityId());
 		if (scan == null || scan.origin.distSqr(center) > 16.0) {
@@ -303,11 +316,13 @@ public final class WorkerManager {
 		int height = MINING_VERTICAL_RADIUS * 2 + 1;
 		int total = width * width * height;
 		int end = Math.min(total, scan.cursor + MINING_SCAN_BUDGET);
+		int pathChecks = 0;
 		for (; scan.cursor < end; scan.cursor++) {
 			int index = scan.cursor;
 			int x = index % width - MINING_HORIZONTAL_RADIUS;
 			int z = index / width % width - MINING_HORIZONTAL_RADIUS;
-			int y = index / (width * width) - MINING_VERTICAL_RADIUS;
+			int layer = index / (width * width);
+			int y = layer == 0 ? 0 : (layer + 1) / 2 * (layer % 2 == 1 ? -1 : 1);
 			BlockPos candidate = scan.origin.offset(x, y, z);
 			if (!validMiningTarget(level, state, dimension, candidate)) continue;
 			if (hazardNearby(level, candidate)) {
@@ -321,18 +336,56 @@ public final class WorkerManager {
 			double goalBonus = resource.equals(state.miningGoalItem()) ? 2_000.0 : 0.0;
 			double memoryBonus = state.rememberedFinds(dimension, resource, candidate) * 40.0;
 			double score = goalBonus + memoryBonus - distance;
-			if (score > scan.bestScore) {
-				scan.bestScore = score;
-				scan.best = candidate.immutable();
-			}
+			if (score <= scan.bestScore || !hasOpenMiningFace(level, candidate)) continue;
+			if (pathChecks >= MINING_PATH_BUDGET) break;
+			pathChecks++;
+			MiningTarget approach = findMiningApproach(level, worker, candidate);
+			if (approach == null) continue;
+			scan.bestScore = score;
+			scan.best = approach;
 			if (resource.equals(state.miningGoalItem())) {
 				miningScans.remove(state.entityId());
-				return candidate.immutable();
+				return approach;
 			}
 		}
-		if (scan.cursor < total) return null;
+		if (scan.cursor < total) {
+			MiningTarget next = scan.best;
+			scan.best = null;
+			scan.bestScore = -Double.MAX_VALUE;
+			return next;
+		}
 		miningScans.remove(state.entityId());
 		return scan.best;
+	}
+
+	private boolean hasOpenMiningFace(ServerLevel level, BlockPos block) {
+		if (isOpen(level, block.above())) return true;
+		for (Direction direction : Direction.Plane.HORIZONTAL) {
+			if (isOpen(level, block.relative(direction))) return true;
+		}
+		return false;
+	}
+
+	private MiningTarget findMiningApproach(ServerLevel level, IronGolem worker, BlockPos block) {
+		BlockPos target = block.immutable();
+		if (worker.distanceToSqr(block.getX() + 0.5, block.getY() + 0.5, block.getZ() + 0.5)
+				<= MINING_REACH_SQUARED) return new MiningTarget(target, worker.blockPosition().immutable());
+
+		Set<BlockPos> stands = new LinkedHashSet<>();
+		if (isOpen(level, block.above())) stands.add(block.above());
+		for (Direction direction : Direction.Plane.HORIZONTAL) {
+			if (isOpen(level, block.relative(direction))) stands.add(block.relative(direction, 2));
+		}
+		stands.removeIf(pos -> !level.hasChunkAt(pos));
+		if (stands.isEmpty()) return null;
+		prepareNavigation(worker);
+		Path path = worker.getNavigation().createPath(stands, 0);
+		return path != null && path.canReach() ? new MiningTarget(target, path.getTarget().immutable()) : null;
+	}
+
+	private boolean isOpen(ServerLevel level, BlockPos pos) {
+		return level.hasChunkAt(pos)
+				&& level.getBlockState(pos).getCollisionShape(level, pos).isEmpty();
 	}
 
 	private boolean validMiningTarget(ServerLevel level, WorkerState state, String dimension, BlockPos pos) {
@@ -399,8 +452,8 @@ public final class WorkerManager {
 	}
 
 	private void clearMiningTarget(ServerLevel level, IronGolem worker, WorkerState state) {
-		BlockPos previous = miningTargets.remove(state.entityId());
-		if (previous != null) level.destroyBlockProgress(worker.getId(), previous, -1);
+		MiningTarget previous = miningTargets.remove(state.entityId());
+		if (previous != null) level.destroyBlockProgress(worker.getId(), previous.block(), -1);
 		miningProgress.remove(state.entityId());
 	}
 
@@ -428,13 +481,15 @@ public final class WorkerManager {
 	private static final class MiningScanState {
 		private final BlockPos origin;
 		private int cursor;
-		private BlockPos best;
+		private MiningTarget best;
 		private double bestScore = -Double.MAX_VALUE;
 
 		private MiningScanState(BlockPos origin) {
 			this.origin = origin;
 		}
 	}
+
+	private record MiningTarget(BlockPos block, BlockPos stand) {}
 
 	private boolean tryUnload(IronGolem worker, WorkerState state) {
 		BlockPos targetPos = state.assignedChest() != null ? state.assignedChest() : chestTargets.get(state.entityId());
@@ -477,11 +532,20 @@ public final class WorkerManager {
 		return true;
 	}
 
-	private void moveTo(IronGolem worker, WorkerState state, double x, double y, double z) {
-		worker.setNoAi(false);
+	private boolean moveTo(IronGolem worker, WorkerState state, double x, double y, double z) {
+		prepareNavigation(worker);
 		worker.setTarget(null);
-		worker.getNavigation().moveTo(x, y, z, 1.0);
-		navigatingWorkers.add(state.entityId());
+		boolean started = worker.getNavigation().moveTo(x, y, z, 1.0);
+		if (started) navigatingWorkers.add(state.entityId());
+		return started;
+	}
+
+	private void prepareNavigation(IronGolem worker) {
+		worker.setNoAi(false);
+		if (!worker.onGround() && worker.level().findSupportingBlock(worker,
+				worker.getBoundingBox().move(0.0, -0.05, 0.0)).isPresent()) {
+			worker.setOnGround(true);
+		}
 	}
 
 	private void freeze(IronGolem worker) {
