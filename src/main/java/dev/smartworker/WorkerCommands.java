@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import dev.smartworker.network.WorkerNetworking;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.SharedSuggestionProvider;
@@ -30,6 +31,7 @@ final class WorkerCommands {
 				.then(Commands.literal("stop").executes(context -> setRunning(context.getSource(), manager, false)))
 				.then(Commands.literal("status").executes(context -> status(context.getSource(), manager)))
 				.then(Commands.literal("stats").executes(context -> stats(context.getSource(), manager)))
+				.then(Commands.literal("config").executes(context -> config(context.getSource(), manager)))
 				.then(Commands.literal("filters").executes(context -> filters(context.getSource(), manager)))
 				.then(filterCommand("whitelist", true, manager))
 				.then(filterCommand("blacklist", false, manager)));
@@ -94,7 +96,10 @@ final class WorkerCommands {
 		int finalItems = items;
 		source.sendSuccess(() -> Component.literal("Smart Worker " + shortId(state) + ": "
 				+ (state.active() ? "running" : "stopped") + ", inventory " + finalOccupied + "/"
-				+ WorkerState.INVENTORY_SIZE + " slots (" + finalItems + " items)."), false);
+				+ WorkerState.INVENTORY_SIZE + " slots (" + finalItems + " items), mining "
+				+ (state.miningEnabled() ? "enabled" : "disabled") + ", goal progress "
+				+ state.miningGoalProgress() + "/"
+				+ (state.miningGoalCount() == 0 ? "unlimited" : state.miningGoalCount()) + "."), false);
 		return 1;
 	}
 
@@ -114,7 +119,9 @@ final class WorkerCommands {
 				.map(entry -> entry.getKey() + "=" + entry.getValue())
 				.reduce((left, right) -> left + ", " + right)
 				.orElse("none");
-		source.sendSuccess(() -> Component.literal("Learned preferences (most collected first): " + summary), false);
+		source.sendSuccess(() -> Component.literal("Learned preferences (most collected first): " + summary
+				+ ". Remembered ore areas: " + state.miningAreas().size()
+				+ "; avoided danger areas: " + state.dangerAreas().size() + "."), false);
 		return 1;
 	}
 
@@ -123,6 +130,20 @@ final class WorkerCommands {
 		if (state == null) return 0;
 		source.sendSuccess(() -> Component.literal("Whitelist: " + describe(state.whitelist())
 				+ "; blacklist: " + describe(state.blacklist()) + ". Blacklist takes priority."), false);
+		return 1;
+	}
+
+	private static int config(CommandSourceStack source, WorkerManager manager) throws CommandSyntaxException {
+		ServerPlayer player = source.getPlayerOrException();
+		WorkerState state = manager.nearestOwned(player).orElse(null);
+		if (state == null) {
+			source.sendFailure(Component.literal("No owned Smart Worker is loaded within 32 blocks."));
+			return 0;
+		}
+		if (!WorkerNetworking.openConfig(player, state)) {
+			source.sendFailure(Component.literal("Your client must have Smart Worker installed to open the config screen."));
+			return 0;
+		}
 		return 1;
 	}
 

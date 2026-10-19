@@ -3,12 +3,13 @@
   "id": "smart_worker",
   "version": "${version}",
   "name": "Smart Worker",
-  "description": "Server-authoritative workers that collect dropped items and learn preferences.",
+  "description": "Server-authoritative workers that collect items, mine configured resources, and learn useful and dangerous areas.",
   "authors": ["Smart Worker contributors"],
   "license": "MIT",
   "environment": "*",
   "entrypoints": {
-    "main": ["dev.smartworker.SmartWorkerMod"]
+    "main": ["dev.smartworker.SmartWorkerMod"],
+    "client": ["dev.smartworker.client.SmartWorkerClient"]
   },
   "mixins": [
     {

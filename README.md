@@ -10,11 +10,16 @@ Smart Worker is a server-authoritative Fabric mod for Minecraft Java Edition 26.
 - Right-clicking a worker toggles it for its owner; other players are denied.
 - Tagged Smart Workers use a graphite-and-steel robot skin with orange accents and cyan lights. Ordinary iron golems are unchanged.
 - A running worker scans every 10 ticks for dropped items within 16 blocks and uses Minecraft's navigation to walk to them.
+- Optional automatic mining incrementally scans up to 32 blocks horizontally and 24 blocks vertically, walks into reach, mines configured blocks with iron-pickaxe loot rules, and inserts the real drops into its nine-slot inventory. Each once-per-second scan batch is capped to avoid a large operation every tick.
+- Mining goals prioritize blocks that produce the requested item and can stop automatically after a configured number of that item has been collected.
+- Workers remember ore finds in 16×16×16 areas. A matching gathering goal favors productive nearby areas and can guide the worker back toward remembered areas within 64 blocks.
+- Workers remember 8×8×8 danger areas after taking damage or detecting hazards such as lava, fire, cactus, magma, or sweet berry bushes, and avoid future mining targets there.
 - Nine inventory slots enforce normal item stack limits. A partial pickup leaves the uncollected remainder in the world.
 - The craftable 27-slot Worker Chest has a custom industrial texture and a normal container screen. Once all nine worker inventory slots are occupied, workers automatically return to the nearest available Worker Chest within 16 horizontal and 6 vertical blocks and transfer everything they carry.
 - Each successful pickup updates a per-item collection count. Target priority is `4 * log(1 + collected count) - distance`, so frequently useful items gradually win against similarly distant alternatives while nearby items remain attractive.
 - `/worker status` reports running state and inventory use.
 - `/worker stats` reports the learned preferences.
+- `/worker config` opens the owner-only mining configuration screen.
 - Each worker has its own item whitelist and blacklist. An empty whitelist permits every item; a nonempty whitelist permits only listed items, and the blacklist always denies an item. Filters apply before the worker chooses a dropped-item target.
 - Ownership, inventory (including item components), active state, learning data, and item filters are saved in `smart_workers.json` in the world directory using an atomic replacement.
 
@@ -42,7 +47,7 @@ set JAVA_HOME=C:\path\to\jdk-25
 gradlew.bat build
 ```
 
-The production JAR is written to `build/libs/smart-worker-1.2.0.jar`.
+The production JAR is written to `build/libs/smart-worker-1.3.0.jar`.
 
 ## Usage
 
@@ -53,6 +58,16 @@ Stand near the worker you intend to control. Commands only select workers you ow
 3. Craft and place a Worker Chest using one chest surrounded by eight iron ingots, or obtain it with `/give @s smart_worker:worker_chest`.
 4. Run `/worker start`.
 5. Inspect it with `/worker status` and `/worker stats`.
+
+### Automatic mining
+
+1. Stand within 32 blocks of your worker and run `/worker config`.
+2. Enable automatic mining and enter comma-separated block IDs. Stone, deepslate, coal, iron, copper, gold, redstone, lapis, diamond, emerald, Nether quartz, and Nether gold ores are included by default.
+3. Enter the goal drop item, such as `minecraft:raw_iron`, and a target count. Use `0` for unlimited mining.
+4. Look at a placed Worker Chest, reopen the screen if necessary, select **Use targeted block**, and save. You may also type its coordinates or leave chest mode on auto-find.
+5. Run `/worker start`. A full worker stops mining and returns to the configured Worker Chest before doing more work.
+
+The server validates ownership, block and item IDs, target count, and the configured chest. A configured chest must be an actual `smart_worker:worker_chest` within 64 blocks when the settings are saved.
 
 ### Item filters
 
@@ -70,4 +85,5 @@ Adding an item to one list automatically removes it from the other. Item IDs are
 - The first release only collects dropped item entities; it does not break blocks.
 - The robot's carried inventory has no direct GUI. It can be checked through `/worker status` and is automatically unloaded into Worker Chests.
 - Unreachable items remain untouched. The worker relies on vanilla navigation and retries target selection at the next scan.
+- Mining uses basic bounded block detection and vanilla navigation. It does not tunnel through arbitrary walls or generate paths through solid terrain.
 - Commands control the nearest owned loaded worker; there is no worker-name selector yet.

@@ -19,6 +19,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import net.minecraft.core.RegistryAccess;
+import net.minecraft.core.BlockPos;
 import net.minecraft.resources.RegistryOps;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.item.ItemStack;
@@ -57,6 +58,36 @@ final class WorkerPersistence {
 			object.add("collected", collected);
 			object.add("whitelist", stringArray(state.whitelist()));
 			object.add("blacklist", stringArray(state.blacklist()));
+			object.addProperty("miningEnabled", state.miningEnabled());
+			object.add("mineBlocks", stringArray(state.mineBlocks()));
+			object.addProperty("miningGoalItem", state.miningGoalItem());
+			object.addProperty("miningGoalCount", state.miningGoalCount());
+			object.addProperty("miningGoalProgress", state.miningGoalProgress());
+			if (state.assignedChest() != null) object.add("assignedChest", blockPos(state.assignedChest()));
+
+			JsonArray miningAreas = new JsonArray();
+			for (MiningAreaMemory memory : state.miningAreas()) {
+				JsonObject area = new JsonObject();
+				area.addProperty("dimension", memory.dimension());
+				area.addProperty("resource", memory.resource());
+				area.addProperty("x", memory.areaX());
+				area.addProperty("y", memory.areaY());
+				area.addProperty("z", memory.areaZ());
+				area.addProperty("finds", memory.finds());
+				miningAreas.add(area);
+			}
+			object.add("miningAreas", miningAreas);
+
+			JsonArray dangerAreas = new JsonArray();
+			for (DangerAreaMemory memory : state.dangerAreas()) {
+				JsonObject area = new JsonObject();
+				area.addProperty("dimension", memory.dimension());
+				area.addProperty("x", memory.areaX());
+				area.addProperty("y", memory.areaY());
+				area.addProperty("z", memory.areaZ());
+				dangerAreas.add(area);
+			}
+			object.add("dangerAreas", dangerAreas);
 			workerArray.add(object);
 		}
 		root.add("workers", workerArray);
@@ -100,8 +131,48 @@ final class WorkerPersistence {
 				}
 				readStringArray(object, "whitelist", state.whitelist());
 				readStringArray(object, "blacklist", state.blacklist());
+				if (object.has("miningEnabled")) state.setMiningEnabled(object.get("miningEnabled").getAsBoolean());
+				if (object.has("mineBlocks")) {
+					state.mineBlocks().clear();
+					readStringArray(object, "mineBlocks", state.mineBlocks());
+				}
+				if (object.has("miningGoalItem")) state.setMiningGoalItem(object.get("miningGoalItem").getAsString());
+				if (object.has("miningGoalCount")) state.setMiningGoalCount(object.get("miningGoalCount").getAsInt());
+				if (object.has("miningGoalProgress")) state.setMiningGoalProgress(object.get("miningGoalProgress").getAsInt());
+				if (object.has("assignedChest")) state.setAssignedChest(readBlockPos(object.getAsJsonObject("assignedChest")));
+				if (object.has("miningAreas")) readMiningAreas(object.getAsJsonArray("miningAreas"), state);
+				if (object.has("dangerAreas")) readDangerAreas(object.getAsJsonArray("dangerAreas"), state);
 				target.put(entityId, state);
 			}
+		}
+	}
+
+	private static JsonObject blockPos(BlockPos pos) {
+		JsonObject object = new JsonObject();
+		object.addProperty("x", pos.getX());
+		object.addProperty("y", pos.getY());
+		object.addProperty("z", pos.getZ());
+		return object;
+	}
+
+	private static BlockPos readBlockPos(JsonObject object) {
+		return new BlockPos(object.get("x").getAsInt(), object.get("y").getAsInt(), object.get("z").getAsInt());
+	}
+
+	private static void readMiningAreas(JsonArray areas, WorkerState state) {
+		for (JsonElement element : areas) {
+			JsonObject area = element.getAsJsonObject();
+			state.miningAreas().add(new MiningAreaMemory(area.get("dimension").getAsString(),
+					area.get("resource").getAsString(), area.get("x").getAsInt(), area.get("y").getAsInt(),
+					area.get("z").getAsInt(), Math.max(1, area.get("finds").getAsInt())));
+		}
+	}
+
+	private static void readDangerAreas(JsonArray areas, WorkerState state) {
+		for (JsonElement element : areas) {
+			JsonObject area = element.getAsJsonObject();
+			state.dangerAreas().add(new DangerAreaMemory(area.get("dimension").getAsString(),
+					area.get("x").getAsInt(), area.get("y").getAsInt(), area.get("z").getAsInt()));
 		}
 	}
 
