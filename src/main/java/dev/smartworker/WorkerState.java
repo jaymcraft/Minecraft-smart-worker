@@ -17,6 +17,7 @@ public final class WorkerState {
 	public static final int INVENTORY_SIZE = 9;
 	public static final Set<String> DEFAULT_MINE_BLOCKS = Set.of(
 			"minecraft:stone", "minecraft:deepslate",
+			"minecraft:iron_block",
 			"minecraft:coal_ore", "minecraft:deepslate_coal_ore",
 			"minecraft:iron_ore", "minecraft:deepslate_iron_ore",
 			"minecraft:copper_ore", "minecraft:deepslate_copper_ore",

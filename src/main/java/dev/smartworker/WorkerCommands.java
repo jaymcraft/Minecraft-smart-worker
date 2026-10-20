@@ -97,9 +97,11 @@ final class WorkerCommands {
 		source.sendSuccess(() -> Component.literal("Smart Worker " + shortId(state) + ": "
 				+ (state.active() ? "running" : "stopped") + ", inventory " + finalOccupied + "/"
 				+ WorkerState.INVENTORY_SIZE + " slots (" + finalItems + " items), mining "
-				+ (state.miningEnabled() ? "enabled" : "disabled") + ", goal progress "
+				+ (state.miningEnabled() ? "enabled" : "disabled") + ", goal "
+				+ state.miningGoalItem() + ", goal progress "
 				+ state.miningGoalProgress() + "/"
-				+ (state.miningGoalCount() == 0 ? "unlimited" : state.miningGoalCount()) + "."), false);
+				+ (state.miningGoalCount() == 0 ? "unlimited" : state.miningGoalCount())
+				+ ", action: " + manager.currentActivity(state) + "."), false);
 		return 1;
 	}
 

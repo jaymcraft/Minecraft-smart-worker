@@ -34,7 +34,7 @@ final class WorkerPersistence {
 	static void save(MinecraftServer server, Iterable<WorkerState> workers) throws IOException {
 		DynamicOps<JsonElement> ops = RegistryOps.create(JsonOps.INSTANCE, server.registryAccess());
 		JsonObject root = new JsonObject();
-		root.addProperty("version", 1);
+		root.addProperty("version", 2);
 		JsonArray workerArray = new JsonArray();
 
 		for (WorkerState state : workers) {
@@ -110,6 +110,7 @@ final class WorkerPersistence {
 		DynamicOps<JsonElement> ops = RegistryOps.create(JsonOps.INSTANCE, server.registryAccess());
 		try (Reader reader = Files.newBufferedReader(path)) {
 			JsonObject root = JsonParser.parseReader(reader).getAsJsonObject();
+			int version = root.has("version") ? root.get("version").getAsInt() : 1;
 			for (JsonElement element : root.getAsJsonArray("workers")) {
 				JsonObject object = element.getAsJsonObject();
 				UUID entityId = UUID.fromString(object.get("entity").getAsString());
@@ -135,6 +136,11 @@ final class WorkerPersistence {
 				if (object.has("mineBlocks")) {
 					state.mineBlocks().clear();
 					readStringArray(object, "mineBlocks", state.mineBlocks());
+					if (version < 2 && !state.mineBlocks().contains("minecraft:iron_block")
+							&& state.mineBlocks().size() == WorkerState.DEFAULT_MINE_BLOCKS.size() - 1
+							&& WorkerState.DEFAULT_MINE_BLOCKS.containsAll(state.mineBlocks())) {
+						state.mineBlocks().add("minecraft:iron_block");
+					}
 				}
 				if (object.has("miningGoalItem")) state.setMiningGoalItem(object.get("miningGoalItem").getAsString());
 				if (object.has("miningGoalCount")) state.setMiningGoalCount(object.get("miningGoalCount").getAsInt());

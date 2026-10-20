@@ -50,6 +50,9 @@ public final class WorkerManager {
 	private static final int MINING_VERTICAL_RADIUS = 24;
 	private static final int MINING_SCAN_BUDGET = 8_192;
 	private static final int MINING_PATH_BUDGET = 16;
+	private static final int NEARBY_GOAL_HORIZONTAL_RADIUS = 8;
+	private static final int NEARBY_GOAL_VERTICAL_RADIUS = 4;
+	private static final int NEARBY_GOAL_PATH_BUDGET = 32;
 	private static final double MINING_REACH_SQUARED = 3.75 * 3.75;
 
 	private final Map<UUID, WorkerState> workers = new LinkedHashMap<>();
@@ -59,12 +62,18 @@ public final class WorkerManager {
 	private final Map<UUID, MiningTarget> miningTargets = new LinkedHashMap<>();
 	private final Map<UUID, Integer> miningProgress = new LinkedHashMap<>();
 	private final Map<UUID, MiningScanState> miningScans = new LinkedHashMap<>();
+	private final Map<UUID, Integer> lastNearbyGoalScan = new LinkedHashMap<>();
 	private final Map<UUID, Float> lastHealth = new LinkedHashMap<>();
+	private final Map<UUID, String> workerActivities = new LinkedHashMap<>();
+	private final WorkerNavigationTracker navigationTracker = new WorkerNavigationTracker();
 	private int tickCounter;
 	private boolean dirty;
 
 	public void load(MinecraftServer server) {
 		workers.clear();
+		lastNearbyGoalScan.clear();
+		workerActivities.clear();
+		navigationTracker.clearAll();
 		try {
 			WorkerPersistence.load(server, workers);
 			SmartWorkerMod.LOGGER.info("Loaded {} smart worker(s)", workers.size());
@@ -117,8 +126,16 @@ public final class WorkerManager {
 		return Optional.ofNullable(workers.get(entityId));
 	}
 
+	public String currentActivity(WorkerState state) {
+		if (!state.active()) return "stopped";
+		return workerActivities.getOrDefault(state.entityId(), "waiting for next scan");
+	}
+
 	public void setActive(WorkerState state, boolean active) {
 		state.setActive(active);
+		workerActivities.put(state.entityId(), active ? "searching for work" : "stopped");
+		lastNearbyGoalScan.remove(state.entityId());
+		navigationTracker.clearProgress(state.entityId());
 		dirty = true;
 	}
 
@@ -135,9 +152,12 @@ public final class WorkerManager {
 		state.setMiningGoalCount(goalCount);
 		state.setMiningGoalProgress(0);
 		state.setAssignedChest(chest);
+		workerActivities.put(state.entityId(), enabled ? "searching for mineable blocks" : "waiting for dropped items");
 		miningTargets.remove(state.entityId());
 		miningProgress.remove(state.entityId());
 		miningScans.remove(state.entityId());
+		lastNearbyGoalScan.remove(state.entityId());
+		navigationTracker.clearProgress(state.entityId());
 		dirty = true;
 	}
 
@@ -193,6 +213,7 @@ public final class WorkerManager {
 
 	public void tick(MinecraftServer server) {
 		tickCounter++;
+		if (tickCounter % 1200 == 0) navigationTracker.pruneExpired(tickCounter);
 		if (tickCounter % SCAN_INTERVAL_TICKS == 0) {
 			navigatingWorkers.clear();
 			for (WorkerState state : new ArrayList<>(workers.values())) tickWorker(server, state);
@@ -209,7 +230,10 @@ public final class WorkerManager {
 	private void tickWorker(MinecraftServer server, WorkerState state) {
 		if (!state.active()) return;
 		IronGolem worker = findLoadedWorker(server, state.entityId());
-		if (worker == null || !worker.isAlive()) return;
+		if (worker == null || !worker.isAlive()) {
+			navigationTracker.clearProgress(state.entityId());
+			return;
+		}
 		String dimension = worker.level().dimension().identifier().toString();
 		float previousHealth = lastHealth.getOrDefault(state.entityId(), worker.getHealth());
 		if (worker.getHealth() < previousHealth) {
@@ -220,14 +244,23 @@ public final class WorkerManager {
 
 		worker.setTarget(null);
 		if (state.isInventoryFull()) {
-			if (!tryUnload(worker, state)) freeze(worker);
+			if (tryUnload(worker, state)) {
+				workerActivities.put(state.entityId(), "unloading inventory");
+			} else {
+				workerActivities.put(state.entityId(), "inventory full; no available Worker Chest");
+				freeze(worker);
+			}
 			return;
 		}
+		if (state.miningEnabled() && !state.miningGoalReached()
+				&& tickNearbyGoalMining(server, worker, state, dimension)) return;
 
 		List<ItemEntity> candidates = worker.level().getEntitiesOfClass(
 				ItemEntity.class,
 				worker.getBoundingBox().inflate(SEARCH_RADIUS),
-				item -> item.isAlive() && !item.getItem().isEmpty() && state.canAccept(item.getItem()));
+				item -> item.isAlive() && !item.getItem().isEmpty() && state.canAccept(item.getItem())
+						&& !navigationTracker.isAvoided(state.entityId(),
+								WorkerNavigationTracker.Destination.item(dimension, item.getUUID()), tickCounter));
 
 		ItemEntity target = candidates.stream().max(Comparator.comparingDouble(item -> {
 			String id = BuiltInRegistries.ITEM.getKey(item.getItem().getItem()).toString();
@@ -235,12 +268,18 @@ public final class WorkerManager {
 		})).orElse(null);
 
 		if (target == null) {
-			if (state.miningEnabled() && !state.miningGoalReached() && tickMining(server, worker, state, dimension)) return;
+			if (state.miningEnabled() && !state.miningGoalReached()) {
+				if (tickMining(server, worker, state, dimension)) return;
+			} else {
+				workerActivities.put(state.entityId(), "waiting for dropped items");
+			}
 			freeze(worker);
 			return;
 		}
 
 		if (worker.distanceToSqr(target) <= 2.25) {
+			workerActivities.put(state.entityId(), "collecting dropped item");
+			navigationTracker.clearProgress(state.entityId());
 			ItemStack dropped = target.getItem();
 			String id = BuiltInRegistries.ITEM.getKey(dropped.getItem()).toString();
 			int inserted = state.insert(dropped);
@@ -253,8 +292,70 @@ public final class WorkerManager {
 			}
 			freeze(worker);
 		} else {
-			moveTo(worker, state, target.getX(), target.getY(), target.getZ());
+			workerActivities.put(state.entityId(), "walking to dropped item");
+			WorkerNavigationTracker.Destination destination =
+					WorkerNavigationTracker.Destination.item(dimension, target.getUUID());
+			if (!navigateTo(worker, state, destination, target.getX(), target.getY(), target.getZ())) {
+				if (state.miningEnabled() && !state.miningGoalReached()
+						&& tickMining(server, worker, state, dimension)) return;
+				workerActivities.put(state.entityId(), "dropped item unreachable; retrying other work");
+				freeze(worker);
+			}
 		}
+	}
+
+	private boolean tickNearbyGoalMining(MinecraftServer server, IronGolem worker,
+			WorkerState state, String dimension) {
+		ServerLevel level = (ServerLevel) worker.level();
+		MiningTarget current = miningTargets.get(state.entityId());
+		if (current != null && validMiningTarget(level, state, dimension, current.block())
+				&& isGoalBlock(level, state, current.block())) {
+			return tickMining(server, worker, state, dimension);
+		}
+		int lastScan = lastNearbyGoalScan.getOrDefault(state.entityId(), Integer.MIN_VALUE / 2);
+		if (tickCounter - lastScan < MINING_SCAN_INTERVAL_TICKS) return false;
+		lastNearbyGoalScan.put(state.entityId(), tickCounter);
+		MiningTarget goal = findNearbyGoal(level, worker, state, dimension);
+		if (goal == null) return false;
+		clearMiningTarget(level, worker, state);
+		miningScans.remove(state.entityId());
+		miningTargets.put(state.entityId(), goal);
+		return tickMining(server, worker, state, dimension);
+	}
+
+	private MiningTarget findNearbyGoal(ServerLevel level, IronGolem worker,
+			WorkerState state, String dimension) {
+		BlockPos center = worker.blockPosition();
+		List<BlockPos> candidates = new ArrayList<>();
+		for (BlockPos pos : BlockPos.betweenClosed(
+				center.offset(-NEARBY_GOAL_HORIZONTAL_RADIUS, -NEARBY_GOAL_VERTICAL_RADIUS,
+						-NEARBY_GOAL_HORIZONTAL_RADIUS),
+				center.offset(NEARBY_GOAL_HORIZONTAL_RADIUS, NEARBY_GOAL_VERTICAL_RADIUS,
+						NEARBY_GOAL_HORIZONTAL_RADIUS))) {
+			if (!level.hasChunkAt(pos) || !isGoalBlock(level, state, pos)
+					|| !validMiningTarget(level, state, dimension, pos)
+					|| !hasOpenMiningFace(level, pos)) continue;
+			candidates.add(pos.immutable());
+		}
+		candidates.sort(Comparator.comparingDouble(pos -> pos.distSqr(center)));
+		int pathChecks = 0;
+		for (BlockPos pos : candidates) {
+			if (hazardNearby(level, pos)) {
+				state.rememberDanger(dimension, pos);
+				dirty = true;
+				continue;
+			}
+			if (++pathChecks > NEARBY_GOAL_PATH_BUDGET) break;
+			MiningTarget approach = findMiningApproach(level, worker, pos);
+			if (approach != null) return approach;
+		}
+		return null;
+	}
+
+	private boolean isGoalBlock(ServerLevel level, WorkerState state, BlockPos pos) {
+		String blockId = BuiltInRegistries.BLOCK.getKey(level.getBlockState(pos).getBlock()).toString();
+		return state.mineBlocks().contains(blockId)
+				&& resourceForBlock(blockId).equals(state.miningGoalItem());
 	}
 
 	private boolean tickMining(MinecraftServer server, IronGolem worker, WorkerState state, String dimension) {
@@ -273,28 +374,46 @@ public final class WorkerManager {
 
 		if (target == null) {
 			// Finish the bounded incremental scan from one stable origin before choosing a remembered area.
-			if (miningScans.containsKey(state.entityId())) return false;
-			return navigateToRememberedArea(worker, state, dimension);
+			if (miningScans.containsKey(state.entityId())) {
+				workerActivities.put(state.entityId(), "scanning for mineable blocks");
+				return false;
+			}
+			if (tickCounter % MINING_SCAN_INTERVAL_TICKS != 0) {
+				workerActivities.put(state.entityId(), "waiting for next mining scan");
+				return false;
+			}
+			if (navigateToRememberedArea(worker, state, dimension)) {
+				workerActivities.put(state.entityId(), "walking to remembered ore area");
+				return true;
+			}
+			workerActivities.put(state.entityId(), "no reachable mineable blocks found in loaded area");
+			return false;
 		}
 		BlockPos block = target.block();
+		String targetId = BuiltInRegistries.BLOCK.getKey(level.getBlockState(block).getBlock()).toString();
 		if (worker.distanceToSqr(block.getX() + 0.5, block.getY() + 0.5, block.getZ() + 0.5) > MINING_REACH_SQUARED) {
+			workerActivities.put(state.entityId(), "walking to " + targetId + " at " + block.toShortString());
 			BlockPos stand = target.stand();
-			if (!moveTo(worker, state, stand.getX() + 0.5, stand.getY(), stand.getZ() + 0.5)) {
+			if (!navigateTo(worker, state, WorkerNavigationTracker.Destination.block(dimension, block),
+					stand.getX() + 0.5, stand.getY(), stand.getZ() + 0.5)) {
 				clearMiningTarget(level, worker, state);
 				miningScans.remove(state.entityId());
+				workerActivities.put(state.entityId(), "cannot reach " + targetId + "; trying another target");
 				return false;
 			}
 			return true;
 		}
 
 		freeze(worker);
+		workerActivities.put(state.entityId(), "mining " + targetId + " at " + block.toShortString());
 		BlockState blockState = level.getBlockState(block);
 		float hardness = blockState.getDestroySpeed(level, block);
 		if (hardness < 0.0F) {
 			clearMiningTarget(level, worker, state);
 			return false;
 		}
-		int requiredSteps = Math.max(2, Math.round(Math.max(0.5F, hardness) * 6.0F));
+		// Worker logic runs every ten game ticks, so each step represents half a second.
+		int requiredSteps = Math.max(2, (int) Math.ceil(Math.max(0.5F, hardness) / 2.0F));
 		int progress = miningProgress.merge(state.entityId(), 1, Integer::sum);
 		level.destroyBlockProgress(worker.getId(), block, Math.min(9, progress * 10 / requiredSteps));
 		if (progress < requiredSteps) return true;
@@ -343,10 +462,6 @@ public final class WorkerManager {
 			if (approach == null) continue;
 			scan.bestScore = score;
 			scan.best = approach;
-			if (resource.equals(state.miningGoalItem())) {
-				miningScans.remove(state.entityId());
-				return approach;
-			}
 		}
 		if (scan.cursor < total) {
 			MiningTarget next = scan.best;
@@ -389,7 +504,9 @@ public final class WorkerManager {
 	}
 
 	private boolean validMiningTarget(ServerLevel level, WorkerState state, String dimension, BlockPos pos) {
-		if (pos == null || !level.hasChunkAt(pos) || state.isDangerous(dimension, pos)) return false;
+		if (pos == null || !level.hasChunkAt(pos) || state.isDangerous(dimension, pos)
+				|| navigationTracker.isAvoided(state.entityId(),
+						WorkerNavigationTracker.Destination.block(dimension, pos), tickCounter)) return false;
 		BlockState blockState = level.getBlockState(pos);
 		String blockId = BuiltInRegistries.BLOCK.getKey(blockState.getBlock()).toString();
 		return state.mineBlocks().contains(blockId) && !blockState.isAir()
@@ -540,6 +657,19 @@ public final class WorkerManager {
 		return started;
 	}
 
+	private boolean navigateTo(IronGolem worker, WorkerState state,
+			WorkerNavigationTracker.Destination destination, double x, double y, double z) {
+		if (!navigationTracker.observe(state.entityId(), destination,
+				Math.sqrt(worker.distanceToSqr(x, y, z)), tickCounter)) {
+			freeze(worker);
+			return false;
+		}
+		if (moveTo(worker, state, x, y, z)) return true;
+		navigationTracker.avoid(state.entityId(), destination, tickCounter);
+		freeze(worker);
+		return false;
+	}
+
 	private void prepareNavigation(IronGolem worker) {
 		worker.setNoAi(false);
 		if (!worker.onGround() && worker.level().findSupportingBlock(worker,
@@ -549,6 +679,7 @@ public final class WorkerManager {
 	}
 
 	private void freeze(IronGolem worker) {
+		navigationTracker.clearProgress(worker.getUUID());
 		worker.getNavigation().stop();
 		worker.setTarget(null);
 		worker.setNoAi(true);
