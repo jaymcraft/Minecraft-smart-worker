@@ -62,12 +62,16 @@ final class WorkerNavigationTracker {
 			return true;
 		}
 		if (tick - previous.lastProgressTick() >= STUCK_TICKS) {
-			avoided.computeIfAbsent(workerId, ignored -> new HashMap<>())
-					.put(destination, tick + AVOID_TICKS);
-			progress.remove(workerId);
+			avoid(workerId, destination, tick);
 			return false;
 		}
 		return true;
+	}
+
+	void avoid(UUID workerId, Destination destination, int tick) {
+		avoided.computeIfAbsent(workerId, ignored -> new HashMap<>())
+				.put(destination, tick + AVOID_TICKS);
+		progress.remove(workerId);
 	}
 
 	void clearProgress(UUID workerId) {

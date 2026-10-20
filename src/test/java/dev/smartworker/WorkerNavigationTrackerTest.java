@@ -69,4 +69,15 @@ class WorkerNavigationTrackerTest {
 		tracker.clearProgress(worker);
 		assertTrue(tracker.isAvoided(worker, target, 101));
 	}
+
+	@Test
+	void failedPathIsAvoidedImmediately() {
+		WorkerNavigationTracker tracker = new WorkerNavigationTracker();
+		UUID worker = UUID.randomUUID();
+		var target = WorkerNavigationTracker.Destination.item(DIMENSION, UUID.randomUUID());
+
+		tracker.avoid(worker, target, 20);
+		assertTrue(tracker.isAvoided(worker, target, 619));
+		assertFalse(tracker.isAvoided(worker, target, 620));
+	}
 }
