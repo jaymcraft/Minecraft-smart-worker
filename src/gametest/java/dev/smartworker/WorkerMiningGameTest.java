@@ -61,6 +61,60 @@ public final class WorkerMiningGameTest {
 		});
 	}
 
+	@GameTest(maxTicks = 500)
+	public void keepsMiningTouchingOreUntilGoalIsReached(GameTestHelper test) {
+		for (int x = 0; x < 8; x++) {
+			for (int z = 0; z < 8; z++) test.setBlock(x, 0, z, Blocks.STONE);
+		}
+		BlockPos[] ore = {
+			new BlockPos(3, 1, 3), new BlockPos(4, 1, 3),
+			new BlockPos(3, 1, 4), new BlockPos(4, 1, 4)
+		};
+		for (BlockPos pos : ore) test.setBlock(pos, Blocks.IRON_ORE);
+
+		ServerPlayer owner = test.makeMockServerPlayerInLevel();
+		BlockPos ownerPos = test.absolutePos(new BlockPos(0, 1, 3));
+		owner.snapTo(ownerPos.getX() + 0.5, ownerPos.getY(), ownerPos.getZ() + 0.5);
+		WorkerManager manager = new WorkerManager();
+		WorkerState worker = manager.spawn(owner);
+		manager.configureMining(worker, true, WorkerState.DEFAULT_MINE_BLOCKS, "minecraft:raw_iron", 4, null);
+		manager.setActive(worker, true);
+		test.onEachTick(() -> {
+			manager.tick(test.getLevel().getServer());
+			if (worker.miningGoalProgress() < 4) {
+				test.assertTrue(worker.miningEnabled(), "Mining stopped before the four-ore goal was reached");
+			}
+		});
+		test.succeedWhen(() -> {
+			for (BlockPos pos : ore) test.assertBlockPresent(Blocks.AIR, pos);
+			test.assertTrue(worker.miningGoalProgress() >= 4, "Worker did not collect four raw iron");
+			test.assertTrue(!worker.miningEnabled(), "Worker did not stop at the completed goal");
+		});
+	}
+
+	@GameTest(maxTicks = 500)
+	public void keepsMiningOreChainBeyondInitialReach(GameTestHelper test) {
+		makeFloor(test);
+		BlockPos[] ore = {
+			new BlockPos(3, 1, 3), new BlockPos(4, 1, 3),
+			new BlockPos(5, 1, 3), new BlockPos(6, 1, 3)
+		};
+		for (BlockPos pos : ore) test.setBlock(pos, Blocks.IRON_ORE);
+
+		ServerPlayer owner = test.makeMockServerPlayerInLevel();
+		BlockPos ownerPos = test.absolutePos(new BlockPos(0, 1, 3));
+		owner.snapTo(ownerPos.getX() + 0.5, ownerPos.getY(), ownerPos.getZ() + 0.5);
+		WorkerManager manager = new WorkerManager();
+		WorkerState worker = manager.spawn(owner);
+		manager.configureMining(worker, true, Set.of("minecraft:iron_ore"), "minecraft:raw_iron", 4, null);
+		manager.setActive(worker, true);
+		test.onEachTick(() -> manager.tick(test.getLevel().getServer()));
+		test.succeedWhen(() -> {
+			for (BlockPos pos : ore) test.assertBlockPresent(Blocks.AIR, pos);
+			test.assertTrue(worker.miningGoalProgress() >= 4, "Worker stopped before mining the ore chain");
+		});
+	}
+
 	@GameTest(maxTicks = 300)
 	public void minesNearbyGoalBeforeFartherGoal(GameTestHelper test) {
 		makeFloor(test);

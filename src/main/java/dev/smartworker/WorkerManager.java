@@ -576,6 +576,10 @@ public final class WorkerManager {
 		MiningTarget previous = miningTargets.remove(state.entityId());
 		if (previous != null) level.destroyBlockProgress(worker.getId(), previous.block(), -1);
 		miningProgress.remove(state.entityId());
+		// The next block must be chosen from the worker's current position. A scan started
+		// before moving or breaking this block may have already passed nearby ore.
+		miningScans.remove(state.entityId());
+		lastNearbyGoalScan.remove(state.entityId());
 	}
 
 	private boolean isOre(String blockId) {
