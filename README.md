@@ -10,6 +10,7 @@ Smart Worker is a server-authoritative Fabric mod for Minecraft Java Edition 26.
 - Right-clicking a worker toggles it for its owner; other players are denied.
 - Tagged Smart Workers use a graphite-and-steel robot skin with orange accents and cyan lights. Ordinary iron golems are unchanged.
 - A running worker scans every 10 ticks for dropped items within 16 blocks and uses Minecraft's navigation to walk to them.
+- If a worker makes no progress toward an item, mining target, remembered area, or Worker Chest for 5 seconds, it tries another destination and avoids the stuck one for 30 seconds. When an assigned Worker Chest is unreachable, the worker may use another nearby Worker Chest for that unload trip.
 - Optional automatic mining incrementally scans up to 32 blocks horizontally and 24 blocks vertically, chooses exposed blocks with a reachable place to stand, mines configured blocks with iron-pickaxe loot rules, and inserts the real drops into its nine-slot inventory. Each once-per-second scan batch is capped to avoid a large operation every tick.
 - Mining goals prioritize reachable nearby blocks that produce the requested item before ordinary mining blocks and dropped items, and can stop automatically after a configured number of that item has been collected.
 - Workers remember ore finds in 16×16×16 areas. A matching gathering goal favors productive nearby areas and can guide the worker back toward remembered areas within 64 blocks.
@@ -83,6 +84,6 @@ Adding an item to one list automatically removes it from the other. Item IDs are
 ## Known limitations
 
 - The robot's carried inventory has no direct GUI. It can be checked through `/worker status` and is automatically unloaded into Worker Chests.
-- Unreachable items remain untouched. The worker relies on vanilla navigation and retries target selection at the next scan.
+- The worker relies on vanilla navigation. Stuck detection skips unreachable destinations temporarily, but it does not build paths through solid terrain.
 - Mining uses vanilla navigation and only targets blocks it can approach from an open face. It does not tunnel through solid terrain to reach buried ores.
 - Commands control the nearest owned loaded worker; there is no worker-name selector yet.

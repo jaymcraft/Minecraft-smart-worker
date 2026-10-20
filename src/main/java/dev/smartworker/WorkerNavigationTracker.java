@@ -12,7 +12,7 @@ final class WorkerNavigationTracker {
 	static final int AVOID_TICKS = 600;
 	private static final double MIN_PROGRESS = 0.5;
 
-	enum Kind { ITEM, BLOCK }
+	enum Kind { ITEM, BLOCK, MEMORY, CHEST }
 
 	record Destination(Kind kind, String dimension, Object id) {
 		static Destination item(String dimension, UUID id) {
@@ -21,6 +21,14 @@ final class WorkerNavigationTracker {
 
 		static Destination block(String dimension, BlockPos pos) {
 			return new Destination(Kind.BLOCK, dimension, pos.immutable());
+		}
+
+		static Destination memory(String dimension, BlockPos pos) {
+			return new Destination(Kind.MEMORY, dimension, pos.immutable());
+		}
+
+		static Destination chest(String dimension, BlockPos pos) {
+			return new Destination(Kind.CHEST, dimension, pos.immutable());
 		}
 	}
 
@@ -41,6 +49,7 @@ final class WorkerNavigationTracker {
 		return expiresAt != null && expiresAt > tick;
 	}
 
+	/** Returns false when the destination has timed out or is still cooling down. */
 	boolean observe(UUID workerId, Destination destination, double distance, int tick) {
 		if (isAvoided(workerId, destination, tick)) return false;
 		Progress previous = progress.get(workerId);

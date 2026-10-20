@@ -156,6 +156,7 @@ public final class WorkerManager {
 		miningTargets.remove(state.entityId());
 		miningProgress.remove(state.entityId());
 		miningScans.remove(state.entityId());
+		chestTargets.remove(state.entityId());
 		lastNearbyGoalScan.remove(state.entityId());
 		navigationTracker.clearProgress(state.entityId());
 		dirty = true;
@@ -559,13 +560,16 @@ public final class WorkerManager {
 				.filter(memory -> memory.dimension().equals(dimension))
 				.filter(memory -> memory.resource().equals(state.miningGoalItem()))
 				.filter(memory -> !state.isDangerous(dimension, memory.center()))
+				.filter(memory -> memory.center().distSqr(worker.blockPosition()) >= 6.0 * 6.0)
+				.filter(memory -> !navigationTracker.isAvoided(state.entityId(),
+						WorkerNavigationTracker.Destination.memory(dimension, memory.center()), tickCounter))
 				.filter(memory -> memory.center().distSqr(worker.blockPosition()) <= 64.0 * 64.0)
 				.max(Comparator.comparingDouble(memory -> memory.finds() * 100.0
 						- memory.center().distSqr(worker.blockPosition()))).orElse(null);
-		if (best == null || best.center().distSqr(worker.blockPosition()) < 6.0 * 6.0) return false;
+		if (best == null) return false;
 		BlockPos center = best.center();
-		moveTo(worker, state, center.getX() + 0.5, center.getY(), center.getZ() + 0.5);
-		return true;
+		return navigateTo(worker, state, WorkerNavigationTracker.Destination.memory(dimension, center),
+				center.getX() + 0.5, center.getY(), center.getZ() + 0.5);
 	}
 
 	private void clearMiningTarget(ServerLevel level, IronGolem worker, WorkerState state) {
@@ -609,42 +613,63 @@ public final class WorkerManager {
 	private record MiningTarget(BlockPos block, BlockPos stand) {}
 
 	private boolean tryUnload(IronGolem worker, WorkerState state) {
-		BlockPos targetPos = state.assignedChest() != null ? state.assignedChest() : chestTargets.get(state.entityId());
+		String dimension = worker.level().dimension().identifier().toString();
+		UUID workerId = state.entityId();
+		BlockPos targetPos = chestTargets.get(workerId);
 		WorkerChestBlockEntity chest = targetPos == null ? null : loadedChest(worker.level(), targetPos);
-		if (chest == null || !chest.hasSpace()) {
-			if (state.assignedChest() != null) return false;
-			chestTargets.remove(state.entityId());
+		if (targetPos != null && (chest == null || !chest.canAcceptAny(state.inventory())
+				|| navigationTracker.isAvoided(workerId,
+						WorkerNavigationTracker.Destination.chest(dimension, targetPos), tickCounter))) {
+			chestTargets.remove(workerId);
 			targetPos = null;
-			int lastSearch = lastChestSearch.getOrDefault(state.entityId(), Integer.MIN_VALUE / 2);
-			if (tickCounter - lastSearch >= CHEST_SEARCH_INTERVAL_TICKS) {
-				lastChestSearch.put(state.entityId(), tickCounter);
-				targetPos = findNearestChest(worker);
-				if (targetPos != null) chestTargets.put(state.entityId(), targetPos);
+			chest = null;
+		}
+
+		if (targetPos == null && state.assignedChest() != null) {
+			BlockPos assigned = state.assignedChest();
+			WorkerChestBlockEntity assignedChest = loadedChest(worker.level(), assigned);
+			if (assignedChest != null && assignedChest.canAcceptAny(state.inventory())
+					&& !navigationTracker.isAvoided(workerId,
+							WorkerNavigationTracker.Destination.chest(dimension, assigned), tickCounter)) {
+				targetPos = assigned;
+				chest = assignedChest;
 			}
 		}
 
-		if (targetPos == null) return false;
-		chest = loadedChest(worker.level(), targetPos);
-		if (chest == null) {
-			chestTargets.remove(state.entityId());
-			return false;
+		if (targetPos == null) {
+			int lastSearch = lastChestSearch.getOrDefault(workerId, Integer.MIN_VALUE / 2);
+			if (tickCounter - lastSearch >= CHEST_SEARCH_INTERVAL_TICKS) {
+				lastChestSearch.put(workerId, tickCounter);
+				targetPos = findNearestChest(worker, state, dimension);
+				if (targetPos != null) {
+					chestTargets.put(workerId, targetPos);
+					chest = loadedChest(worker.level(), targetPos);
+				}
+			}
 		}
+		if (targetPos == null || chest == null) return false;
 
 		double targetX = targetPos.getX() + 0.5;
 		double targetY = targetPos.getY() + 0.5;
 		double targetZ = targetPos.getZ() + 0.5;
 		if (worker.distanceToSqr(targetX, targetY, targetZ) <= 6.25) {
+			navigationTracker.clearProgress(workerId);
 			int moved = chest.insertAll(state.inventory());
 			if (moved > 0) dirty = true;
 			if (state.isInventoryEmpty()) {
-				chestTargets.remove(state.entityId());
+				chestTargets.remove(workerId);
 				freeze(worker);
-			} else if (!chest.hasSpace()) {
-				chestTargets.remove(state.entityId());
-				lastChestSearch.remove(state.entityId());
+			} else if (!chest.canAcceptAny(state.inventory())) {
+				chestTargets.remove(workerId);
+				lastChestSearch.remove(workerId);
 			}
 		} else {
-			moveTo(worker, state, targetX, targetY, targetZ);
+			if (!navigateTo(worker, state, WorkerNavigationTracker.Destination.chest(dimension, targetPos),
+					targetX, targetY, targetZ)) {
+				chestTargets.remove(workerId);
+				lastChestSearch.remove(workerId);
+				return false;
+			}
 		}
 		return true;
 	}
@@ -686,7 +711,7 @@ public final class WorkerManager {
 		worker.setDeltaMovement(0.0, worker.getDeltaMovement().y, 0.0);
 	}
 
-	private BlockPos findNearestChest(IronGolem worker) {
+	private BlockPos findNearestChest(IronGolem worker, WorkerState state, String dimension) {
 		BlockPos center = worker.blockPosition();
 		BlockPos nearest = null;
 		double nearestDistance = Double.MAX_VALUE;
@@ -694,7 +719,9 @@ public final class WorkerManager {
 				center.offset(-CHEST_HORIZONTAL_RADIUS, -CHEST_VERTICAL_RADIUS, -CHEST_HORIZONTAL_RADIUS),
 				center.offset(CHEST_HORIZONTAL_RADIUS, CHEST_VERTICAL_RADIUS, CHEST_HORIZONTAL_RADIUS))) {
 			WorkerChestBlockEntity chest = loadedChest(worker.level(), candidate);
-			if (chest == null || !chest.hasSpace()) continue;
+			if (chest == null || !chest.canAcceptAny(state.inventory())
+					|| navigationTracker.isAvoided(state.entityId(),
+							WorkerNavigationTracker.Destination.chest(dimension, candidate), tickCounter)) continue;
 			double distance = candidate.distSqr(center);
 			if (distance < nearestDistance) {
 				nearestDistance = distance;
